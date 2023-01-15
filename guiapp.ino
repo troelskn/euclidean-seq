@@ -55,21 +55,22 @@ int app_state_current_page = PAGE_TRACK;
 #define PROPERTY_DENSITY 1
 #define PROPERTY_SHIFT 2
 #define PROPERTY_KEY 3
-#define NUMBER_OF_PROPERTIES 4
-char property_names[NUMBER_OF_PROPERTIES][10] = { "Len", "Den", "Shf", "Key" };
+#define PROPERTY_VELOCITY_VARIANCE 4
+#define PROPERTY_MIDI_CHANNEL 5
+#define NUMBER_OF_PROPERTIES 6
+char property_names[NUMBER_OF_PROPERTIES][10] = { "Len", "Den", "Shf", "Key", "Vel", "Ch" };
 
-#define NUMBER_OF_TRACK_CURSOR_POSITIONS 5
+#define NUMBER_OF_TRACK_CURSOR_POSITIONS 7
 int app_state_track_cursor_position = 0;
 
 #define SETTINGS_NUMBER_OF_TRACKS 0
-#define SETTINGS_MIDI_CHANNEL 1
-#define SETTINGS_BPM 2
-#define SETTINGS_SWING 3
-#define NUMBER_OF_SETTINGS_ITEMS 4
-char settings_item_names[NUMBER_OF_SETTINGS_ITEMS][10] = { "Tracks", "MIDI Ch", "BPM", "Swing" };
-int app_state_settings[NUMBER_OF_SETTINGS_ITEMS] = { 4, 10, 120, 0 };
+#define SETTINGS_BPM 1
+#define SETTINGS_SWING 2
+#define NUMBER_OF_SETTINGS_ITEMS 3
+char settings_item_names[NUMBER_OF_SETTINGS_ITEMS][10] = { "Tracks", "BPM", "Swing" };
+int app_state_settings[NUMBER_OF_SETTINGS_ITEMS] = { 4, 120, 0 };
 
-#define NUMBER_OF_SETTINGS_CURSOR_POSITIONS 5
+#define NUMBER_OF_SETTINGS_CURSOR_POSITIONS 4
 int app_state_settings_cursor_position = 0;
 
 #define MAX_TRACK_LENGTH 64
@@ -79,7 +80,7 @@ int app_state_selected_track = 0;
 int app_state_track_patterns[MAX_TRACKS][MAX_TRACK_LENGTH];
 
 void setup() {
-  //Serial.begin(115200);
+  Serial.begin(9600);
   //while (! Serial) delay(10);
 
   app_state_setup();
@@ -147,10 +148,6 @@ void sequencer_trigger_note_offs(unsigned long current_time) {
     for (int key=0; key<128; key++) {
       event = sequencer_key_off_events[channel][key];
       if (event != 0 && event <= current_time) {
-        //Serial.print("Note Off ");
-        //Serial.print(key+1);
-        //Serial.print(" ");
-        //Serial.println(millis());
         MIDI.sendNoteOff(key+1, 0, channel+1);
         sequencer_key_off_events[channel][key] = 0;
       }
@@ -169,12 +166,9 @@ void sequencer_trigger_step() {
 
 void sequencer_trigger_note(int track_id) {
   int key = track_key(track_id);
-  int midi_channel = app_setting_midi_channel();
-  //Serial.print("Note On ");
-  //Serial.print(key);
-  //Serial.print(" ");
-  //Serial.println(millis());
-  MIDI.sendNoteOn(key, 127, midi_channel);
+  int midi_channel = track_midi_channel(track_id);
+  int velocity = 127 - random(track_velocity_variance(track_id) * 8);
+  MIDI.sendNoteOn(key, velocity, midi_channel);
   sequencer_key_off_events[midi_channel-1][key-1] = one_clock_step_from_now();
 }
 
@@ -302,9 +296,9 @@ void display_render_page_track() {
     if (prop_id == PROPERTY_KEY) {
       char key_name[3];
       key_to_name(app_state_tracks[app_state_selected_track][prop_id], key_name);
-      sprintf(label, "%3s.%3s", property_names[prop_id], key_name);
+      sprintf(label, "%s.%3s", property_names[prop_id], key_name);
     } else {
-      sprintf(label, "%3s.%2d", property_names[prop_id], app_state_tracks[app_state_selected_track][prop_id]);      
+      sprintf(label, "%s.%2d", property_names[prop_id], app_state_tracks[app_state_selected_track][prop_id]);      
     }
     display.print(label);
     display.setTextColor(SH110X_WHITE);
@@ -338,10 +332,6 @@ int app_setting_number_of_tracks() {
   return app_state_settings[SETTINGS_NUMBER_OF_TRACKS];
 }
 
-int app_setting_midi_channel() {
-  return app_state_settings[SETTINGS_MIDI_CHANNEL];
-}
-
 int app_setting_bpm() {
   return app_state_settings[SETTINGS_BPM];
 }
@@ -362,8 +352,16 @@ int track_shift(int track_id) {
   return app_state_tracks[track_id][PROPERTY_SHIFT];
 }
 
+int track_velocity_variance(int track_id) {
+  return app_state_tracks[track_id][PROPERTY_VELOCITY_VARIANCE];
+}
+
 int track_key(int track_id) {
   return app_state_tracks[track_id][PROPERTY_KEY];
+}
+
+int track_midi_channel(int track_id) {
+  return app_state_tracks[track_id][PROPERTY_MIDI_CHANNEL];
 }
 
 void neokey_setup() {
@@ -414,6 +412,8 @@ void app_state_setup() {
     app_state_tracks[i][PROPERTY_DENSITY] = 0;
     app_state_tracks[i][PROPERTY_SHIFT] = 0;
     app_state_tracks[i][PROPERTY_KEY] = 36;
+    app_state_tracks[i][PROPERTY_VELOCITY_VARIANCE] = 0;
+    app_state_tracks[i][PROPERTY_MIDI_CHANNEL] = 10;
     calculate_track_pattern(i);
   }
 }
@@ -480,6 +480,18 @@ void check_bounds() {
   }
   if (app_state_tracks[app_state_selected_track][PROPERTY_KEY] > 127) {
     app_state_tracks[app_state_selected_track][PROPERTY_KEY] = 127;
+  }
+  if (app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] < 0) {
+    app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] = 0;
+  }
+  if (app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] > 16) {
+    app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] = 16;
+  }
+  if (app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] < 1) {
+    app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] = 1;
+  }
+  if (app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] > 16) {
+    app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] = 16;
   }
 }
 
