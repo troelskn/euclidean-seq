@@ -9,6 +9,8 @@
 #include <MIDI.h>
 #include <HardwareSerial.h>
 
+#include "limits.h"
+
 #define ARRAY_TERMINATE 0
 #define TRIGGER 'x'
 #define REST '.'
@@ -20,6 +22,7 @@ unsigned long last_clock_step;
 int sequencer_play_position = -1;
 // [midichannel-1][key]
 unsigned long sequencer_key_off_events[16][128];
+unsigned long sequencer_next_key_off_event = 0;
 
 struct MIDISettings : public midi::DefaultSettings
 {
@@ -104,6 +107,7 @@ void midi_setup() {
       sequencer_key_off_events[channel][key] = 0;
     }
   }
+  sequencer_next_key_off_event = ULONG_MAX;
 }
 
 int steps_per_beat() {
@@ -142,14 +146,21 @@ void sequencer_loop() {
 }
 
 void sequencer_trigger_note_offs(unsigned long current_time) {
-  // TODO: This could be optimized. Maybe just with a counter. Or store the earliest next event.
   unsigned long event;
+  if (sequencer_next_key_off_event > current_time) {
+    return;
+  }
+  sequencer_next_key_off_event = ULONG_MAX;  
   for (int channel=0; channel<16; channel++) {
     for (int key=0; key<128; key++) {
       event = sequencer_key_off_events[channel][key];
-      if (event != 0 && event <= current_time) {
-        MIDI.sendNoteOff(key+1, 0, channel+1);
-        sequencer_key_off_events[channel][key] = 0;
+      if (event != 0) {
+        if (event <= current_time) {
+          MIDI.sendNoteOff(key+1, 0, channel+1);
+          sequencer_key_off_events[channel][key] = 0;
+        } else {
+          sequencer_next_key_off_event = min(sequencer_next_key_off_event, event);
+        }
       }
     }
   }  
@@ -169,7 +180,9 @@ void sequencer_trigger_note(int track_id) {
   int midi_channel = track_midi_channel(track_id);
   int velocity = 127 - random(track_velocity_variance(track_id) * 8);
   MIDI.sendNoteOn(key, velocity, midi_channel);
-  sequencer_key_off_events[midi_channel-1][key-1] = one_clock_step_from_now();
+  unsigned long note_off_event_at = one_clock_step_from_now();
+  sequencer_key_off_events[midi_channel-1][key-1] = note_off_event_at;
+  sequencer_next_key_off_event = min(sequencer_next_key_off_event, note_off_event_at);  
 }
 
 void display_setup() {
