@@ -61,12 +61,13 @@ int app_state_current_page = PAGE_TRACK;
 #define PROPERTY_LENGTH 0
 #define PROPERTY_DENSITY 1
 #define PROPERTY_SHIFT 2
-#define PROPERTY_KEY 3
-#define PROPERTY_VELOCITY_VARIANCE 4
-#define NUMBER_OF_PROPERTIES 5
-char property_names[NUMBER_OF_PROPERTIES][10] = { "Len", "Den", "Shf", "Key", "Vel" };
+#define PROPERTY_VELOCITY_VARIANCE 3
+#define PROPERTY_KEY 4
+#define PROPERTY_KEY2 5
+#define NUMBER_OF_PROPERTIES 6
+char property_names[NUMBER_OF_PROPERTIES][10] = { "Len.", "Den.", "Shf.", "Vel.", "Key.", {(char)0x1A, (char)0x20} };
 
-#define NUMBER_OF_TRACK_CURSOR_POSITIONS 6
+#define NUMBER_OF_TRACK_CURSOR_POSITIONS 7
 int app_state_track_cursor_position = 0;
 
 #define SETTINGS_NUMBER_OF_TRACKS 0
@@ -137,7 +138,7 @@ void clear_key_off_events() {
       sequencer_key_off_events[channel][key] = 0;
     }
   }
-  sequencer_next_key_off_event = ULONG_MAX;  
+  sequencer_next_key_off_event = ULONG_MAX;
 }
 
 void midi_setup() {
@@ -202,7 +203,7 @@ void sequencer_trigger_note_offs() {
         }
       }
     }
-  }  
+  }
 }
 
 void sequencer_trigger_step() {
@@ -216,11 +217,15 @@ void sequencer_trigger_step() {
 
 void sequencer_trigger_note(int track_id) {
   int key = track_key(track_id);
+  int key2 = track_key2(track_id);
+  if (key2 > key) {
+    key = random(1 + (key2 - key)) + key;
+  }
   int midi_channel = app_setting_midi_channel();
   int velocity = 127 - random(track_velocity_variance(track_id) * 8);
   MIDI.sendNoteOn(key, velocity, midi_channel);
   sequencer_key_off_events[midi_channel-1][key-1] = sequencer_clock + 1;
-  sequencer_next_key_off_event = min(sequencer_next_key_off_event, sequencer_clock + 1);  
+  sequencer_next_key_off_event = min(sequencer_next_key_off_event, sequencer_clock + 1);
 }
 
 void display_setup() {
@@ -246,7 +251,7 @@ void display_update() {
     display_render_page_settings();
   }
   app_state_display_changed = false;
-}  
+}
 
 void display_render_page_settings() {
   char label[20];
@@ -267,18 +272,18 @@ void display_render_page_settings() {
   display.setTextSize(1);
   for (int i=0; i < NUMBER_OF_SETTINGS_ITEMS; i++) {
     if (i == app_state_settings_cursor_position - 1) {
-      display.setTextColor(SH110X_BLACK, SH110X_WHITE); // 'inverted' text      
+      display.setTextColor(SH110X_BLACK, SH110X_WHITE); // 'inverted' text
     } else {
       display.setTextColor(SH110X_WHITE);
     }
     if (i == SETTINGS_CLOCK) {
-      sprintf(label, "%-9s %s", settings_item_names[i], app_state_settings[i] == 0 ? "Internal" : "External");      
+      sprintf(label, "%-9s %s", settings_item_names[i], app_state_settings[i] == 0 ? "Internal" : "External");
     } else {
       sprintf(label, "%-7s %3d", settings_item_names[i], app_state_settings[i]);
     }
     display.println(label);
   }
-  display.display();  
+  display.display();
 }
 
 void key_to_name(int key, char output[3]) {
@@ -325,6 +330,7 @@ void key_to_name(int key, char output[3]) {
 
 void display_render_page_track() {
   char label[20];
+  char key_name[3];
   display.clearDisplay();
   display.setTextSize(2);
   display.setTextColor(SH110X_WHITE);
@@ -343,17 +349,21 @@ void display_render_page_track() {
   display.setCursor(0, 20);
   display.setTextSize(1);
   for (int prop_id=0; prop_id < NUMBER_OF_PROPERTIES; prop_id++) {
+    display.print(property_names[prop_id]);
     if (prop_id == app_state_track_cursor_position - 1) {
-      display.setTextColor(SH110X_BLACK, SH110X_WHITE); // 'inverted' text      
+      display.setTextColor(SH110X_BLACK, SH110X_WHITE); // 'inverted' text
     } else {
       display.setTextColor(SH110X_WHITE);
     }
-    if (prop_id == PROPERTY_KEY) {
-      char key_name[3];
-      key_to_name(app_state_tracks[app_state_selected_track][prop_id], key_name);
-      sprintf(label, "%s.%3s", property_names[prop_id], key_name);
+    if (prop_id == PROPERTY_KEY || prop_id == PROPERTY_KEY2) {
+      if (prop_id == PROPERTY_KEY2 && (track_key(app_state_selected_track) >= track_key2(app_state_selected_track))) {
+        sprintf(label, "off");
+      } else {
+        key_to_name(app_state_tracks[app_state_selected_track][prop_id], key_name);
+        sprintf(label, "%3s", key_name);
+      }
     } else {
-      sprintf(label, "%s.%2d", property_names[prop_id], app_state_tracks[app_state_selected_track][prop_id]);      
+      sprintf(label, "%2d", app_state_tracks[app_state_selected_track][prop_id]);
     }
     display.print(label);
     display.setTextColor(SH110X_WHITE);
@@ -371,12 +381,12 @@ void display_render_page_track() {
   for (int step=8; step < min(16, selected_track_length); step++) {
     if (sequencer_step_is_trigger_p(step, app_state_selected_track)) {
       display.fillCircle(((step - 8) * 10) + 4, 56, 4, SH110X_WHITE);
-    } else {      
+    } else {
       display.drawCircle(((step - 8) * 10) + 4, 56, 4, SH110X_WHITE);
     }
   }
 
-  display.display();  
+  display.display();
 }
 
 int app_property_length() {
@@ -419,6 +429,10 @@ int track_key(int track_id) {
   return app_state_tracks[track_id][PROPERTY_KEY];
 }
 
+int track_key2(int track_id) {
+  return app_state_tracks[track_id][PROPERTY_KEY2];
+}
+
 void neokey_setup() {
   neokey.begin(NEOKEY_I2C_ADDRESS);
 }
@@ -431,11 +445,11 @@ void neokey_update() {
       if (buttons_was & (1<<keynum)) {
         // noop
       } else {
-        neokey_on_keydown(keynum);      
+        neokey_on_keydown(keynum);
       }
     } else {
       if (buttons_was & (1<<keynum)) {
-        neokey_on_keyup(keynum);      
+        neokey_on_keyup(keynum);
       } else {
         // noop
       }
@@ -467,6 +481,7 @@ void app_state_setup() {
     app_state_tracks[i][PROPERTY_DENSITY] = 0;
     app_state_tracks[i][PROPERTY_SHIFT] = 0;
     app_state_tracks[i][PROPERTY_KEY] = 36;
+    app_state_tracks[i][PROPERTY_KEY2] = 0;
     app_state_tracks[i][PROPERTY_VELOCITY_VARIANCE] = 0;
     calculate_track_pattern(i);
   }
@@ -475,7 +490,7 @@ void app_state_setup() {
 void app_next_track() {
   if (app_state_current_page == PAGE_SETTINGS) {
     return;
-  }  
+  }
   app_state_selected_track++;
   if (app_state_selected_track >= app_setting_number_of_tracks()) {
     app_state_selected_track = 0;
@@ -490,14 +505,14 @@ void app_next_property() {
       app_state_track_cursor_position = 0;
     }
     app_state_display_changed = true;
-  }  
+  }
   if (app_state_current_page == PAGE_SETTINGS) {
     app_state_settings_cursor_position++;
     if (app_state_settings_cursor_position >= NUMBER_OF_SETTINGS_CURSOR_POSITIONS) {
       app_state_settings_cursor_position = 0;
     }
     app_state_display_changed = true;
-  }  
+  }
 }
 
 void check_bounds() {
@@ -521,7 +536,7 @@ void check_bounds() {
   }
   if (app_state_settings[SETTINGS_MIDI_CHANNEL] > 16) {
     app_state_settings[SETTINGS_MIDI_CHANNEL] = 16;
-  }  
+  }
   if (app_state_tracks[app_state_selected_track][PROPERTY_LENGTH] < 1) {
     app_state_tracks[app_state_selected_track][PROPERTY_LENGTH] = 1;
   }
@@ -540,12 +555,18 @@ void check_bounds() {
   }
   if (app_state_tracks[app_state_selected_track][PROPERTY_SHIFT] > app_state_tracks[app_state_selected_track][PROPERTY_LENGTH]) {
     app_state_tracks[app_state_selected_track][PROPERTY_SHIFT] = app_state_tracks[app_state_selected_track][PROPERTY_LENGTH];
-  }  
+  }
   if (app_state_tracks[app_state_selected_track][PROPERTY_KEY] < 24) {
     app_state_tracks[app_state_selected_track][PROPERTY_KEY] = 24;
   }
   if (app_state_tracks[app_state_selected_track][PROPERTY_KEY] > 127) {
     app_state_tracks[app_state_selected_track][PROPERTY_KEY] = 127;
+  }
+  if (app_state_tracks[app_state_selected_track][PROPERTY_KEY2] < 0) {
+    app_state_tracks[app_state_selected_track][PROPERTY_KEY2] = 0;
+  }
+  if (app_state_tracks[app_state_selected_track][PROPERTY_KEY2] > 127) {
+    app_state_tracks[app_state_selected_track][PROPERTY_KEY2] = 127;
   }
   if (app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] < 0) {
     app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] = 0;
@@ -561,6 +582,12 @@ void app_decrement_selected_property() {
       return;
     }
     app_state_tracks[app_state_selected_track][app_state_track_cursor_position-1]--;
+    if (app_state_track_cursor_position-1 == PROPERTY_KEY) {
+      app_state_tracks[app_state_selected_track][PROPERTY_KEY2]--;
+    }
+    if (app_state_track_cursor_position-1 == PROPERTY_KEY2 && (track_key(app_state_selected_track) == track_key2(app_state_selected_track))) {
+      app_state_tracks[app_state_selected_track][app_state_track_cursor_position-1] = 0;
+    }
     calculate_track_pattern(app_state_selected_track); // TODO: Only really necessary if one of len, den, shf changed
     app_state_display_changed = true;
   }
@@ -582,7 +609,14 @@ void app_increment_selected_property() {
       app_state_display_changed = true;
       return;
     }
-    app_state_tracks[app_state_selected_track][app_state_track_cursor_position-1]++;
+    if (app_state_track_cursor_position-1 == PROPERTY_KEY2 && (track_key(app_state_selected_track) > track_key2(app_state_selected_track))) {
+      app_state_tracks[app_state_selected_track][app_state_track_cursor_position-1] = track_key(app_state_selected_track) + 1;
+    } else {
+      app_state_tracks[app_state_selected_track][app_state_track_cursor_position-1]++;
+      if (app_state_track_cursor_position-1 == PROPERTY_KEY) {
+        app_state_tracks[app_state_selected_track][PROPERTY_KEY2]++;
+      }
+    }
     calculate_track_pattern(app_state_selected_track); // TODO: Only really necessary if one of len, den, shf changed
     app_state_display_changed = true;
   }
@@ -631,14 +665,14 @@ void bjorklund_calculate(int length, int density, int output[]) {
     }
     output[length] = ARRAY_TERMINATE;
     return;
-  }  
+  }
   // Init arrays
   // Ex. l = 8 and d = 5
   // [1] [1] [1] [1] [1] [0] [0] [0]
   int width = length - 1;
   for (int i=0; i < length; i++) {
     bjorklun_buffer[i][0] = i < density ? TRIGGER : REST;
-    bjorklun_buffer[i][1] = ARRAY_TERMINATE;    
+    bjorklun_buffer[i][1] = ARRAY_TERMINATE;
   }
   int target, remainder_size;
   while (true) {
@@ -683,7 +717,7 @@ void calculate_track_pattern(int track_id) {
   int length = track_length(track_id);
   int density = track_density(track_id);
   app_state_track_patterns[track_id][0] = ARRAY_TERMINATE;
-  bjorklund_calculate(length, density, app_state_track_patterns[track_id]);    
+  bjorklund_calculate(length, density, app_state_track_patterns[track_id]);
 }
 
 bool sequencer_step_is_trigger_p(int step, int track_id) {
