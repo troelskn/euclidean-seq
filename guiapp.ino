@@ -11,6 +11,9 @@
 
 #include "limits.h"
 
+// https://kevinboone.me/picoflash.html?i=1
+// https://github.com/raspberrypi/pico-examples/blob/master/flash/program/flash_program.c
+
 #define ARRAY_TERMINATE 0
 #define TRIGGER 'x'
 #define REST '.'
@@ -19,6 +22,7 @@ int bjorklun_buffer[64][65];
 
 #define MILLIS_PER_MINUTE 60000
 unsigned long last_clock_step;
+unsigned long sequencer_next_clock_step;
 int sequencer_play_position = -1;
 // [midichannel-1][key]
 unsigned long sequencer_key_off_events[16][128];
@@ -59,21 +63,21 @@ int app_state_current_page = PAGE_TRACK;
 #define PROPERTY_SHIFT 2
 #define PROPERTY_KEY 3
 #define PROPERTY_VELOCITY_VARIANCE 4
-#define PROPERTY_MIDI_CHANNEL 5
-#define NUMBER_OF_PROPERTIES 6
-char property_names[NUMBER_OF_PROPERTIES][10] = { "Len", "Den", "Shf", "Key", "Vel", "Ch" };
+#define NUMBER_OF_PROPERTIES 5
+char property_names[NUMBER_OF_PROPERTIES][10] = { "Len", "Den", "Shf", "Key", "Vel" };
 
-#define NUMBER_OF_TRACK_CURSOR_POSITIONS 7
+#define NUMBER_OF_TRACK_CURSOR_POSITIONS 6
 int app_state_track_cursor_position = 0;
 
 #define SETTINGS_NUMBER_OF_TRACKS 0
-#define SETTINGS_BPM 1
-#define SETTINGS_SWING 2
-#define NUMBER_OF_SETTINGS_ITEMS 3
-char settings_item_names[NUMBER_OF_SETTINGS_ITEMS][10] = { "Tracks", "BPM", "Swing" };
-int app_state_settings[NUMBER_OF_SETTINGS_ITEMS] = { 4, 120, 0 };
+#define SETTINGS_CLOCK 1
+#define SETTINGS_BPM 2
+#define SETTINGS_MIDI_CHANNEL 3
+#define NUMBER_OF_SETTINGS_ITEMS 4
+char settings_item_names[NUMBER_OF_SETTINGS_ITEMS][10] = { "Tracks", "Clock", "BPM", "MIDI Ch" };
+int app_state_settings[NUMBER_OF_SETTINGS_ITEMS] = { 4, 0, 120, 10 };
 
-#define NUMBER_OF_SETTINGS_CURSOR_POSITIONS 4
+#define NUMBER_OF_SETTINGS_CURSOR_POSITIONS 5
 int app_state_settings_cursor_position = 0;
 
 #define MAX_TRACK_LENGTH 64
@@ -82,8 +86,10 @@ int app_state_tracks[MAX_TRACKS][NUMBER_OF_PROPERTIES];
 int app_state_selected_track = 0;
 int app_state_track_patterns[MAX_TRACKS][MAX_TRACK_LENGTH];
 
+unsigned long sequencer_clock = 0;
+
 void setup() {
-  Serial.begin(9600);
+  //Serial.begin(9600);
   //while (! Serial) delay(10);
 
   app_state_setup();
@@ -94,20 +100,55 @@ void setup() {
 }
 
 void loop() {
+  MIDI.read();
   sequencer_loop();
   neokey_update();
   display_update();
 }
 
-void midi_setup() {
-  MIDI.begin(MIDI_CHANNEL_OMNI);
-  last_clock_step = millis();
+bool midi_external_clock_active = false;
+unsigned long midi_external_clock = 0;
+void midi_external_on_clock() {
+  midi_external_clock++;
+  if (midi_external_clock % 6 == 0) {
+    if (app_setting_clock() == 1) { //  running on external clock source
+      sequencer_advance_clock();
+    }
+  }
+}
+
+void midi_external_on_start() {
+  midi_external_clock_active = true;
+  midi_external_clock = 0;
+  clear_key_off_events();
+}
+
+void midi_external_on_stop() {
+  midi_external_clock_active = false;
+}
+
+void midi_external_on_continue() {
+  midi_external_clock_active = true;
+}
+
+void clear_key_off_events() {
   for (int channel=0; channel<16; channel++) {
     for (int key=0; key<128; key++) {
       sequencer_key_off_events[channel][key] = 0;
     }
   }
-  sequencer_next_key_off_event = ULONG_MAX;
+  sequencer_next_key_off_event = ULONG_MAX;  
+}
+
+void midi_setup() {
+  clear_key_off_events();
+  MIDI.setHandleClock(midi_external_on_clock);
+  MIDI.setHandleStart(midi_external_on_start);
+  MIDI.setHandleContinue(midi_external_on_continue);
+  MIDI.setHandleStop(midi_external_on_stop);
+  MIDI.begin(MIDI_CHANNEL_OMNI);
+  MIDI.turnThruOff();
+  MIDI.setThruFilterMode(midi::Thru::Off);
 }
 
 int steps_per_beat() {
@@ -126,36 +167,34 @@ unsigned long millis_between_steps() {
   return millis_between_beats() / steps_per_beat();
 }
 
-unsigned long next_clock_step() {
-  return last_clock_step + millis_between_steps();
-}
-
-unsigned long one_clock_step_from_now() {
-  return millis() + millis_between_steps();
-}
-
 void sequencer_loop() {
-  unsigned long current_time = millis();
-  if (current_time < next_clock_step()) {
-    sequencer_trigger_note_offs(current_time);
+  if (app_setting_clock() == 1) { //  running on external clock source
     return;
   }
-  sequencer_trigger_step();
-  sequencer_trigger_note_offs(current_time);
-  last_clock_step = current_time;
+  if (millis() < sequencer_next_clock_step) {
+    return;
+  }
+  sequencer_next_clock_step += millis_between_steps();
+  sequencer_advance_clock();
 }
 
-void sequencer_trigger_note_offs(unsigned long current_time) {
+void sequencer_advance_clock() {
+  sequencer_clock++;
+  sequencer_trigger_step();
+  sequencer_trigger_note_offs();
+}
+
+void sequencer_trigger_note_offs() {
   unsigned long event;
-  if (sequencer_next_key_off_event > current_time) {
+  if (sequencer_next_key_off_event > sequencer_clock) {
     return;
   }
-  sequencer_next_key_off_event = ULONG_MAX;  
+  sequencer_next_key_off_event = ULONG_MAX;
   for (int channel=0; channel<16; channel++) {
     for (int key=0; key<128; key++) {
       event = sequencer_key_off_events[channel][key];
       if (event != 0) {
-        if (event <= current_time) {
+        if (event <= sequencer_clock) {
           MIDI.sendNoteOff(key+1, 0, channel+1);
           sequencer_key_off_events[channel][key] = 0;
         } else {
@@ -177,12 +216,11 @@ void sequencer_trigger_step() {
 
 void sequencer_trigger_note(int track_id) {
   int key = track_key(track_id);
-  int midi_channel = track_midi_channel(track_id);
+  int midi_channel = app_setting_midi_channel();
   int velocity = 127 - random(track_velocity_variance(track_id) * 8);
   MIDI.sendNoteOn(key, velocity, midi_channel);
-  unsigned long note_off_event_at = one_clock_step_from_now();
-  sequencer_key_off_events[midi_channel-1][key-1] = note_off_event_at;
-  sequencer_next_key_off_event = min(sequencer_next_key_off_event, note_off_event_at);  
+  sequencer_key_off_events[midi_channel-1][key-1] = sequencer_clock + 1;
+  sequencer_next_key_off_event = min(sequencer_next_key_off_event, sequencer_clock + 1);  
 }
 
 void display_setup() {
@@ -233,7 +271,11 @@ void display_render_page_settings() {
     } else {
       display.setTextColor(SH110X_WHITE);
     }
-    sprintf(label, "%-7s %3d", settings_item_names[i], app_state_settings[i]);
+    if (i == SETTINGS_CLOCK) {
+      sprintf(label, "%-9s %s", settings_item_names[i], app_state_settings[i] == 0 ? "Internal" : "External");      
+    } else {
+      sprintf(label, "%-7s %3d", settings_item_names[i], app_state_settings[i]);
+    }
     display.println(label);
   }
   display.display();  
@@ -345,12 +387,16 @@ int app_setting_number_of_tracks() {
   return app_state_settings[SETTINGS_NUMBER_OF_TRACKS];
 }
 
+int app_setting_clock() {
+  return app_state_settings[SETTINGS_CLOCK];
+}
+
 int app_setting_bpm() {
   return app_state_settings[SETTINGS_BPM];
 }
 
-int app_setting_swing() {
-  return app_state_settings[SETTINGS_SWING];
+int app_setting_midi_channel() {
+  return app_state_settings[SETTINGS_MIDI_CHANNEL];
 }
 
 int track_length(int track_id) {
@@ -371,10 +417,6 @@ int track_velocity_variance(int track_id) {
 
 int track_key(int track_id) {
   return app_state_tracks[track_id][PROPERTY_KEY];
-}
-
-int track_midi_channel(int track_id) {
-  return app_state_tracks[track_id][PROPERTY_MIDI_CHANNEL];
 }
 
 void neokey_setup() {
@@ -426,7 +468,6 @@ void app_state_setup() {
     app_state_tracks[i][PROPERTY_SHIFT] = 0;
     app_state_tracks[i][PROPERTY_KEY] = 36;
     app_state_tracks[i][PROPERTY_VELOCITY_VARIANCE] = 0;
-    app_state_tracks[i][PROPERTY_MIDI_CHANNEL] = 10;
     calculate_track_pattern(i);
   }
 }
@@ -466,9 +507,21 @@ void check_bounds() {
   if (app_state_settings[SETTINGS_NUMBER_OF_TRACKS] >= MAX_TRACKS) {
     app_state_settings[SETTINGS_NUMBER_OF_TRACKS] = MAX_TRACKS - 1;
   }
-  if (app_state_selected_track >= app_setting_number_of_tracks()) {
-    app_state_selected_track = app_setting_number_of_tracks() - 1;
+  if (app_state_selected_track >= app_state_settings[SETTINGS_NUMBER_OF_TRACKS]) {
+    app_state_selected_track = app_state_settings[SETTINGS_NUMBER_OF_TRACKS] - 1;
   }
+  if (app_state_settings[SETTINGS_CLOCK] < 0) {
+    app_state_settings[SETTINGS_CLOCK] = 0;
+  }
+  if (app_state_settings[SETTINGS_CLOCK] > 1) {
+    app_state_settings[SETTINGS_CLOCK] = 1;
+  }
+  if (app_state_settings[SETTINGS_MIDI_CHANNEL] < 1) {
+    app_state_settings[SETTINGS_MIDI_CHANNEL] = 1;
+  }
+  if (app_state_settings[SETTINGS_MIDI_CHANNEL] > 16) {
+    app_state_settings[SETTINGS_MIDI_CHANNEL] = 16;
+  }  
   if (app_state_tracks[app_state_selected_track][PROPERTY_LENGTH] < 1) {
     app_state_tracks[app_state_selected_track][PROPERTY_LENGTH] = 1;
   }
@@ -499,12 +552,6 @@ void check_bounds() {
   }
   if (app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] > 16) {
     app_state_tracks[app_state_selected_track][PROPERTY_VELOCITY_VARIANCE] = 16;
-  }
-  if (app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] < 1) {
-    app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] = 1;
-  }
-  if (app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] > 16) {
-    app_state_tracks[app_state_selected_track][PROPERTY_MIDI_CHANNEL] = 16;
   }
 }
 
