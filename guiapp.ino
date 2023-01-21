@@ -11,14 +11,8 @@
 
 #include "limits.h"
 
-// https://kevinboone.me/picoflash.html?i=1
-// https://github.com/raspberrypi/pico-examples/blob/master/flash/program/flash_program.c
-
-#define ARRAY_TERMINATE 0
-#define TRIGGER 'x'
-#define REST '.'
-
-int bjorklun_buffer[64][65];
+#include <hardware/sync.h>
+#include <hardware/flash.h>
 
 #define MILLIS_PER_MINUTE 60000
 unsigned long last_clock_step;
@@ -70,7 +64,7 @@ int app_state_current_page = PAGE_TRACK;
 char property_names[NUMBER_OF_VISIBLE_PROPERTIES][10] = { "Len.", "Den.", "Shf.", "Vel.", "Key.", {(char)0x1A, (char)0x20} };
 
 #define NUMBER_OF_TRACK_CURSOR_POSITIONS 7
-int app_state_track_cursor_position = 0;
+int8_t app_state_track_cursor_position = 0;
 
 #define CLOCK_INTERNAL 0
 #define CLOCK_EXTERNAL 1
@@ -82,22 +76,60 @@ int app_state_track_cursor_position = 0;
 #define SETTINGS_MIDI_CHANNEL 3
 #define NUMBER_OF_SETTINGS_ITEMS 4
 char settings_item_names[NUMBER_OF_SETTINGS_ITEMS][10] = { "Tracks", "Clock", "BPM", "MIDI Ch" };
-int app_state_settings[NUMBER_OF_SETTINGS_ITEMS] = { 4, 0, 120, 10 };
+int8_t app_state_settings[NUMBER_OF_SETTINGS_ITEMS] = { 4, 0, 120, 10 };
 
 #define NUMBER_OF_SETTINGS_CURSOR_POSITIONS 5
-int app_state_settings_cursor_position = 0;
+int8_t app_state_settings_cursor_position = 0;
 
 #define MAX_TRACK_LENGTH 64
 #define MAX_TRACKS 64
+int8_t app_state_tracks[MAX_TRACKS][NUMBER_OF_PROPERTIES];
+int8_t app_state_selected_track = 0;
+int8_t app_state_track_patterns[MAX_TRACKS][MAX_TRACK_LENGTH];
+
+#define ARRAY_TERMINATE 0
+#define TRIGGER 'x'
+#define REST '.'
+
+int8_t bjorklun_buffer[64][65];
+
+// https://kevinboone.me/picoflash.html?i=1
+// https://github.com/raspberrypi/pico-examples/blob/master/flash/program/flash_program.c
+
+// https://github.com/MakerMatrix/RP2040_flash_programming/blob/main/RP2040_flash/RP2040_flash.ino
+// We're going to erase and reprogram a region 256k from the start of flash.
+// Once done, we can access this at XIP_BASE + 256k.
+// Set the target offest to the last sector of flash
+#define FLASH_TARGET_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)
+int8_t flash_buf[FLASH_PAGE_SIZE];
+int8_t *flash_p, flash_page, flash_addr;
+int8_t flash_first_empty_page = -1;
+
+// XIP_BASE = 0x10000000
+// FLASH_PAGE_SIZE = 256
+// FLASH_SECTOR_SIZE = 4096
+// FLASH_BLOCK_SIZE = 65536
+// PICO_FLASH_SIZE_BYTES = 2097152
+
+/*
+Data to save:
 int app_state_tracks[MAX_TRACKS][NUMBER_OF_PROPERTIES];
 int app_state_selected_track = 0;
-int app_state_track_patterns[MAX_TRACKS][MAX_TRACK_LENGTH];
+int app_state_settings[NUMBER_OF_SETTINGS_ITEMS];
+
+NUMBER_OF_SETTINGS_ITEMS 4
+
+NUMBER_OF_PROPERTIES 7
+MAX_TRACKS 64
+
+64 x 7 => 448
+
+*/
 
 unsigned long sequencer_clock = 0;
 
 void setup() {
-  //Serial.begin(9600);
-  //while (! Serial) delay(10);
+  // Serial.begin(9600);
 
   app_state_setup();
   display_setup();
@@ -210,24 +242,24 @@ void sequencer_trigger_note_offs() {
 
 void sequencer_trigger_step() {
   sequencer_play_position++;
-  for (int track_id=0; track_id < app_setting_number_of_tracks(); track_id++) {
+  for (int8_t track_id=0; track_id < app_setting_number_of_tracks(); track_id++) {
     if (sequencer_step_is_trigger_p(sequencer_play_position, track_id)) {
       sequencer_trigger_note(track_id);
     }
   }
 }
 
-void sequencer_trigger_note(int track_id) {
+void sequencer_trigger_note(int8_t track_id) {
   if (track_mute(track_id)) {
     return;
   }
-  int key = track_key(track_id);
-  int key2 = track_key2(track_id);
+  int8_t key = track_key(track_id);
+  int8_t key2 = track_key2(track_id);
   if (key2 > key) {
     key = random(1 + (key2 - key)) + key;
   }
-  int midi_channel = app_setting_midi_channel();
-  int velocity = 127 - random(track_velocity_variance(track_id) * 8);
+  int8_t midi_channel = app_setting_midi_channel();
+  int8_t velocity = 127 - random(track_velocity_variance(track_id) * 8);
   MIDI.sendNoteOn(key, velocity, midi_channel);
   sequencer_key_off_events[midi_channel-1][key-1] = sequencer_clock + 1;
   sequencer_next_key_off_event = min(sequencer_next_key_off_event, sequencer_clock + 1);
@@ -275,7 +307,7 @@ void display_render_page_settings() {
 
   display.setCursor(0, 20);
   display.setTextSize(1);
-  for (int i=0; i < NUMBER_OF_SETTINGS_ITEMS; i++) {
+  for (int8_t i=0; i < NUMBER_OF_SETTINGS_ITEMS; i++) {
     if (i == app_state_settings_cursor_position - 1) {
       display.setTextColor(SH110X_BLACK, SH110X_WHITE); // 'inverted' text
     } else {
@@ -428,31 +460,31 @@ int app_setting_midi_channel() {
   return app_state_settings[SETTINGS_MIDI_CHANNEL];
 }
 
-int track_length(int track_id) {
+int track_length(int8_t track_id) {
   return app_state_tracks[track_id][PROPERTY_LENGTH];
 }
 
-int track_density(int track_id) {
+int track_density(int8_t track_id) {
   return app_state_tracks[track_id][PROPERTY_DENSITY];
 }
 
-int track_shift(int track_id) {
+int track_shift(int8_t track_id) {
   return app_state_tracks[track_id][PROPERTY_SHIFT];
 }
 
-int track_velocity_variance(int track_id) {
+int track_velocity_variance(int8_t track_id) {
   return app_state_tracks[track_id][PROPERTY_VELOCITY_VARIANCE];
 }
 
-int track_key(int track_id) {
+int track_key(int8_t track_id) {
   return app_state_tracks[track_id][PROPERTY_KEY];
 }
 
-int track_key2(int track_id) {
+int track_key2(int8_t track_id) {
   return app_state_tracks[track_id][PROPERTY_KEY2];
 }
 
-int track_mute(int track_id) {
+int track_mute(int8_t track_id) {
   return app_state_tracks[track_id][PROPERTY_MUTE];
 }
 
@@ -463,7 +495,7 @@ void neokey_setup() {
 void neokey_update() {
   uint8_t buttons_was = neokey_buttons;
   neokey_buttons = neokey.read();
-  for (int keynum=0; keynum<4; keynum++) {
+  for (int8_t keynum=0; keynum<4; keynum++) {
     if (neokey_buttons & (1<<keynum)) {
       if (buttons_was & (1<<keynum)) {
         // noop
@@ -480,7 +512,7 @@ void neokey_update() {
   }
 }
 
-void neokey_on_keydown(int keynum) {
+void neokey_on_keydown(int8_t keynum) {
   if (keynum == KEYNUM_TRACK) {
     neokey.pixels.setPixelColor(keynum, seesaw_NeoPixel::Color(0, 0, 255));
     app_next_track();
@@ -500,7 +532,7 @@ void neokey_on_keydown(int keynum) {
   neokey.pixels.show();
 }
 
-void neokey_on_keyup(int keynum) {
+void neokey_on_keyup(int8_t keynum) {
   neokey.pixels.setPixelColor(keynum, 0x000000);
   neokey.pixels.show();
 }
@@ -665,17 +697,17 @@ void app_increment_selected_property() {
   check_bounds();
 }
 
-int zarray_count(int arr[]) {
-  int counter = 0;
+int zarray_count(int8_t arr[]) {
+  int8_t counter = 0;
   while (arr[counter] != ARRAY_TERMINATE) {
     counter++;
   }
   return counter;
 }
 
-void zarray_concat(int target[], int source[]) {
-  int target_size = zarray_count(target);
-  int counter = 0;
+void zarray_concat(int8_t target[], int8_t source[]) {
+  int8_t target_size = zarray_count(target);
+  int8_t counter = 0;
   while (source[counter] != ARRAY_TERMINATE) {
     target[target_size + counter] = source[counter];
     counter++;
@@ -683,17 +715,17 @@ void zarray_concat(int target[], int source[]) {
   target[target_size + counter] = ARRAY_TERMINATE;
 }
 
-void print_array(int arr[]) {
-  int length = zarray_count(arr);
-  for (int i=0; i < length; i++) {
+void print_array(int8_t arr[]) {
+  int8_t length = zarray_count(arr);
+  for (int8_t i=0; i < length; i++) {
     Serial.print((char)arr[i]);
   }
   Serial.println();
 }
 
-void bjorklund_calculate(int length, int density, int output[]) {
+void bjorklund_calculate(int8_t length, int8_t density, int8_t output[]) {
   if (density > length || density < 1) {
-    for (int i=0; i < length; i++) {
+    for (int8_t i=0; i < length; i++) {
       output[i] = REST;
     }
     output[length] = ARRAY_TERMINATE;
@@ -702,12 +734,12 @@ void bjorklund_calculate(int length, int density, int output[]) {
   // Init arrays
   // Ex. l = 8 and d = 5
   // [1] [1] [1] [1] [1] [0] [0] [0]
-  int width = length - 1;
-  for (int i=0; i < length; i++) {
+  int8_t width = length - 1;
+  for (int8_t i=0; i < length; i++) {
     bjorklun_buffer[i][0] = i < density ? TRIGGER : REST;
     bjorklun_buffer[i][1] = ARRAY_TERMINATE;
   }
-  int target, remainder_size;
+  int8_t target, remainder_size;
   while (true) {
     if (width == 0) {
       break;
@@ -741,22 +773,22 @@ void bjorklund_calculate(int length, int density, int output[]) {
   }
 
   // collapse rows into output
-  for (int i=0; i <= width; i++) {
+  for (int8_t i=0; i <= width; i++) {
     zarray_concat(output, bjorklun_buffer[i]);
   }
 }
 
-void calculate_track_pattern(int track_id) {
-  int length = track_length(track_id);
-  int density = track_density(track_id);
+void calculate_track_pattern(int8_t track_id) {
+  int8_t length = track_length(track_id);
+  int8_t density = track_density(track_id);
   app_state_track_patterns[track_id][0] = ARRAY_TERMINATE;
   bjorklund_calculate(length, density, app_state_track_patterns[track_id]);
 }
 
-bool sequencer_step_is_trigger_p(int step, int track_id) {
-  int length = track_length(track_id);
-  int shift = track_shift(track_id);
-  int position = (step - shift) % length;
+bool sequencer_step_is_trigger_p(int8_t step, int8_t track_id) {
+  int8_t length = track_length(track_id);
+  int8_t shift = track_shift(track_id);
+  int8_t position = (step - shift) % length;
   while (position < 0) {
     position = position + length;
   }
