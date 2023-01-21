@@ -64,11 +64,17 @@ int app_state_current_page = PAGE_TRACK;
 #define PROPERTY_VELOCITY_VARIANCE 3
 #define PROPERTY_KEY 4
 #define PROPERTY_KEY2 5
-#define NUMBER_OF_PROPERTIES 6
-char property_names[NUMBER_OF_PROPERTIES][10] = { "Len.", "Den.", "Shf.", "Vel.", "Key.", {(char)0x1A, (char)0x20} };
+#define PROPERTY_MUTE 6
+#define NUMBER_OF_VISIBLE_PROPERTIES 6
+#define NUMBER_OF_PROPERTIES 7
+char property_names[NUMBER_OF_VISIBLE_PROPERTIES][10] = { "Len.", "Den.", "Shf.", "Vel.", "Key.", {(char)0x1A, (char)0x20} };
 
 #define NUMBER_OF_TRACK_CURSOR_POSITIONS 7
 int app_state_track_cursor_position = 0;
+
+#define CLOCK_INTERNAL 0
+#define CLOCK_EXTERNAL 1
+#define CLOCK_STOPPED 2
 
 #define SETTINGS_NUMBER_OF_TRACKS 0
 #define SETTINGS_CLOCK 1
@@ -112,7 +118,7 @@ unsigned long midi_external_clock = 0;
 void midi_external_on_clock() {
   midi_external_clock++;
   if (midi_external_clock % 6 == 0) {
-    if (app_setting_clock() == 1) { //  running on external clock source
+    if (app_setting_clock() == CLOCK_EXTERNAL) {
       sequencer_advance_clock();
     }
   }
@@ -156,12 +162,8 @@ int steps_per_beat() {
   return 4;
 }
 
-int beats_per_minute() {
-  return 120;
-}
-
 unsigned long millis_between_beats() {
-  return MILLIS_PER_MINUTE / beats_per_minute();
+  return MILLIS_PER_MINUTE / app_setting_bpm();
 }
 
 unsigned long millis_between_steps() {
@@ -169,7 +171,7 @@ unsigned long millis_between_steps() {
 }
 
 void sequencer_loop() {
-  if (app_setting_clock() == 1) { //  running on external clock source
+  if (app_setting_clock() != CLOCK_INTERNAL) {
     return;
   }
   if (millis() < sequencer_next_clock_step) {
@@ -216,6 +218,9 @@ void sequencer_trigger_step() {
 }
 
 void sequencer_trigger_note(int track_id) {
+  if (track_mute(track_id)) {
+    return;
+  }
   int key = track_key(track_id);
   int key2 = track_key2(track_id);
   if (key2 > key) {
@@ -277,7 +282,19 @@ void display_render_page_settings() {
       display.setTextColor(SH110X_WHITE);
     }
     if (i == SETTINGS_CLOCK) {
-      sprintf(label, "%-9s %s", settings_item_names[i], app_state_settings[i] == 0 ? "Internal" : "External");
+      char clock_name[20];
+      switch (app_state_settings[i]) {
+      case 0:
+        sprintf(clock_name, "Internal");
+        break;
+      case 1:
+        sprintf(clock_name, "External");
+        break;
+      case 2:
+        sprintf(clock_name, "Stopped");
+        break;
+      }
+      sprintf(label, "%-9s %s", settings_item_names[i], clock_name);
     } else {
       sprintf(label, "%-7s %3d", settings_item_names[i], app_state_settings[i]);
     }
@@ -331,6 +348,7 @@ void key_to_name(int key, char output[3]) {
 void display_render_page_track() {
   char label[20];
   char key_name[3];
+  char icon;
   display.clearDisplay();
   display.setTextSize(2);
   display.setTextColor(SH110X_WHITE);
@@ -338,17 +356,18 @@ void display_render_page_track() {
   sprintf(label, "Track %2d ", app_state_selected_track + 1);
   display.println(label);
 
+  icon = track_mute(app_state_selected_track) ? (char)0x78 : (char)0xF0;
   if (app_state_track_cursor_position == 0) {
-    display.drawChar(128 - 16, 0, (char)0xF0, SH110X_BLACK, SH110X_WHITE, 2);
+    display.drawChar(128 - 16, 0, icon, SH110X_BLACK, SH110X_WHITE, 2);
     display.drawFastVLine(128 - 17, 0, 16, SH110X_WHITE);
     display.drawFastVLine(128 - 18, 0, 16, SH110X_WHITE);
   } else {
-    display.drawChar(128 - 16, 0, (char)0xF0, SH110X_WHITE, SH110X_BLACK, 2);
+    display.drawChar(128 - 16, 0, icon, SH110X_WHITE, SH110X_BLACK, 2);
   }
 
   display.setCursor(0, 20);
   display.setTextSize(1);
-  for (int prop_id=0; prop_id < NUMBER_OF_PROPERTIES; prop_id++) {
+  for (int prop_id=0; prop_id < NUMBER_OF_VISIBLE_PROPERTIES; prop_id++) {
     display.print(property_names[prop_id]);
     if (prop_id == app_state_track_cursor_position - 1) {
       display.setTextColor(SH110X_BLACK, SH110X_WHITE); // 'inverted' text
@@ -433,6 +452,10 @@ int track_key2(int track_id) {
   return app_state_tracks[track_id][PROPERTY_KEY2];
 }
 
+int track_mute(int track_id) {
+  return app_state_tracks[track_id][PROPERTY_MUTE];
+}
+
 void neokey_setup() {
   neokey.begin(NEOKEY_I2C_ADDRESS);
 }
@@ -483,6 +506,7 @@ void app_state_setup() {
     app_state_tracks[i][PROPERTY_KEY] = 36;
     app_state_tracks[i][PROPERTY_KEY2] = 0;
     app_state_tracks[i][PROPERTY_VELOCITY_VARIANCE] = 0;
+    app_state_tracks[i][PROPERTY_MUTE] = 0;
     calculate_track_pattern(i);
   }
 }
@@ -528,8 +552,8 @@ void check_bounds() {
   if (app_state_settings[SETTINGS_CLOCK] < 0) {
     app_state_settings[SETTINGS_CLOCK] = 0;
   }
-  if (app_state_settings[SETTINGS_CLOCK] > 1) {
-    app_state_settings[SETTINGS_CLOCK] = 1;
+  if (app_state_settings[SETTINGS_CLOCK] > 2) {
+    app_state_settings[SETTINGS_CLOCK] = 2;
   }
   if (app_state_settings[SETTINGS_MIDI_CHANNEL] < 1) {
     app_state_settings[SETTINGS_MIDI_CHANNEL] = 1;
@@ -579,6 +603,8 @@ void check_bounds() {
 void app_decrement_selected_property() {
   if (app_state_current_page == PAGE_TRACK) {
     if (app_state_track_cursor_position == 0) {
+      app_state_tracks[app_state_selected_track][PROPERTY_MUTE] = !app_state_tracks[app_state_selected_track][PROPERTY_MUTE];
+      app_state_display_changed = true;
       return;
     }
     app_state_tracks[app_state_selected_track][app_state_track_cursor_position-1]--;
