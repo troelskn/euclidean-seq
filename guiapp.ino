@@ -482,20 +482,27 @@ void neokey_update() {
 
 void neokey_on_keydown(int keynum) {
   if (keynum == KEYNUM_TRACK) {
+    neokey.pixels.setPixelColor(keynum, seesaw_NeoPixel::Color(0, 0, 255));
     app_next_track();
   }
   if (keynum == KEYNUM_PROPERTY) {
+    neokey.pixels.setPixelColor(keynum, seesaw_NeoPixel::Color(255, 0, 255));
     app_next_property();
   }
   if (keynum == KEYNUM_DECREMENT) {
+    neokey.pixels.setPixelColor(keynum, seesaw_NeoPixel::Color(255, 0, 0));
     app_decrement_selected_property();
   }
   if (keynum == KEYNUM_INCREMENT) {
+    neokey.pixels.setPixelColor(keynum, seesaw_NeoPixel::Color(0, 255, 0));
     app_increment_selected_property();
   }
+  neokey.pixels.show();
 }
 
 void neokey_on_keyup(int keynum) {
+  neokey.pixels.setPixelColor(keynum, 0x000000);
+  neokey.pixels.show();
 }
 
 void app_state_setup() {
