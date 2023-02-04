@@ -6,6 +6,7 @@
 - Adafruit MIDI FeatherWing Kit
 - Adafruit FeatherWing OLED - 128x64
 - NeoKey 1x4 QT I2C - Four Mechanical Key Switches with NeoPixels - STEMMA QT / Qwiic
+- (Optional) FeatherWing Proto, Doubler or Tripler and some standoffs to mount it on something.
 
 Connect OLED and Neokey with STEMMA QT / Qwiic cables.
 
